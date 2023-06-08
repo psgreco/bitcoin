@@ -1223,6 +1223,9 @@ Sock::EventsPerSock CConnman::GenerateWaitSockets(Span<CNode* const> nodes)
         //   write buffer in this case before receiving more. This avoids
         //   needlessly queueing received data, if the remote peer is not themselves
         //   receiving data. This means properly utilizing TCP flow control signalling.
+        //   This logic can put both nodes in deadlock if they are both "not receiving",
+        //   so there is a special case where we only stop receiving new messages, but
+        //   keep processing the in-progress ones.
         // * Otherwise, if there is space left in the receive buffer, select() for
         //   receiving data.
         // * Hand off all complete messages to the processor, to be handled without
@@ -1240,14 +1243,15 @@ Sock::EventsPerSock CConnman::GenerateWaitSockets(Span<CNode* const> nodes)
             continue;
         }
 
-        Sock::Event requested{0};
         if (select_send) {
-            requested = Sock::SEND;
-        } else if (select_recv) {
-            requested = Sock::RECV;
+            events_per_sock.emplace(pnode->m_sock, Sock::Events{Sock::SEND});
+            if (pnode->m_deserializer->IsEmpty()) {
+                select_recv = false;
+            }
         }
-
-        events_per_sock.emplace(pnode->m_sock, Sock::Events{requested});
+        if (select_recv) {
+            events_per_sock.emplace(pnode->m_sock, Sock::Events{Sock::RECV});
+        }
     }
 
     return events_per_sock;
